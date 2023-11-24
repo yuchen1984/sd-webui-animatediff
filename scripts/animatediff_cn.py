@@ -86,11 +86,17 @@ class AnimateDiffControl:
 
                     if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH:
                         if 'inpaint' in unit.module:
-                            images = shared.listfiles(f'{unit.batch_images}/image')
-                            masks = shared.listfiles(f'{unit.batch_images}/mask')
+                            if isinstance(unit.batch_images, list) and len(unit.batch_images) >= 2:
+                                images = shared.listfiles(unit.batch_images[0])
+                                masks = shared.listfiles(unit.batch_images[1])
+                            else:
+                                images = shared.listfiles(f'{unit.batch_images}/image')
+                                masks = shared.listfiles(f'{unit.batch_images}/mask')
                             assert len(images) == len(masks), 'Inpainting image mask count mismatch'
                             unit.batch_images = [{'image': images[i], 'mask': masks[i]} for i in range(len(images))]
                         else:
+                            if isinstance(unit.batch_images, list):
+                                unit.batch_images = unit.batch_images[0]
                             unit.batch_images = shared.listfiles(unit.batch_images)
 
                 unit_batch_list = [len(unit.batch_images) for unit in units
@@ -134,10 +140,27 @@ class AnimateDiffControl:
             processing.process_images_inner = instance.processing_process_images_hijack
 
 
-    def hack_cn(self):
+    def hack_cn(self, params: AnimateDiffProcess):
         cn_script = self.cn_script
 
-
+        def get_input_frames():
+            if params.video_source is not None and params.video_source != '':
+                cap = cv2.VideoCapture(params.video_source)
+                frame_count = 0
+                tmp_frame_dir = Path(f'{data_path}/tmp/animatediff-frames/')
+                tmp_frame_dir.mkdir(parents=True, exist_ok=True)
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    cv2.imwrite(f"{tmp_frame_dir}/{frame_count}.png", frame)
+                    frame_count += 1
+                cap.release()
+                return str(tmp_frame_dir)
+            elif params.video_path is not None and params.video_path != '':
+                return params.video_path
+            return ''
+            
         def hacked_main_entry(self, p: StableDiffusionProcessing):
             from scripts import external_code, global_state, hook
             from scripts.controlnet_lora import bind_control_lora
@@ -255,9 +278,33 @@ class AnimateDiffControl:
                         bind_control_lora(unet, control_lora)
                         p.controlnet_control_loras.append(control_lora)
 
-                if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH:
+               #if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH:
+                using_video_input = False
+                if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH or unit.image is None:
                     input_images = []
+                    print("apply hack")
+                    unit.batch_images = get_input_frames()
+                    using_video_input = True
+
+                    # Hack
+                    if 'inpaint' in unit.module:
+                        if isinstance(unit.batch_images, list) and len(unit.batch_images) >= 2:
+                            images = shared.listfiles(unit.batch_images[0])
+                            masks = shared.listfiles(unit.batch_images[1])
+                        else:
+                            images = shared.listfiles(f'{unit.batch_images}/image')
+                            masks = shared.listfiles(f'{unit.batch_images}/mask')
+                        assert len(images) == len(masks), 'Inpainting image mask count mismatch'
+                        unit.batch_images = [{'image': images[i], 'mask': masks[i]} for i in range(len(images))]
+                    else:
+                        if isinstance(unit.batch_images, list):
+                            unit.batch_images = unit.batch_images[0]
+                        unit.batch_images = shared.listfiles(unit.batch_images)
+                    if len(unit.batch_images) > params.video_length:
+                        unit.batch_images = unit.batch_images[:params.video_length]
+                        
                     for img in unit.batch_images:
+                        #print(img)
                         unit.image = img
                         input_image, _ = cn_script.choose_input_image(p, unit, idx)
                         input_images.append(input_image)
@@ -483,8 +530,11 @@ class AnimateDiffControl:
                     cfg_injection=control_mode == external_code.ControlMode.CONTROL,
                 )
                 forward_params.append(forward_param)
+                print('#controls = ' + str(len(controls)))
 
-                unit_is_batch = getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH
+                unit_is_batch = getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH or using_video_input
+                #unit_is_batch = getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH
+                print('unit_is_batch = ' + str(unit_is_batch))
                 if 'inpaint_only' in unit.module:
                     final_inpaint_raws = []
                     final_inpaint_masks = []
@@ -492,6 +542,8 @@ class AnimateDiffControl:
                         final_inpaint_feed = hr_controls[i] if hr_controls is not None else controls[i]
                         final_inpaint_feed = final_inpaint_feed.detach().cpu().numpy()
                         final_inpaint_feed = np.ascontiguousarray(final_inpaint_feed).copy()
+                        if len(final_inpaint_feed.shape) == 3:
+                            final_inpaint_feed = np.expand_dims(final_inpaint_feed, axis=0)
                         final_inpaint_mask = final_inpaint_feed[0, 3, :, :].astype(np.float32)
                         final_inpaint_raw = final_inpaint_feed[0, :3].astype(np.float32)
                         sigma = shared.opts.data.get("control_net_inpaint_blur_sigma", 7)
@@ -509,8 +561,8 @@ class AnimateDiffControl:
                             logger.error('Error: ControlNet find post-processing resolution mismatch. This could be related to other extensions hacked processing.')
                             return x
                         idx = i if unit_is_batch else 0
-                        r = final_inpaint_raw[idx].to(x.dtype).to(x.device)
-                        m = final_inpaint_mask[idx].to(x.dtype).to(x.device)
+                        r = final_inpaint_raws[idx].to(x.dtype).to(x.device)
+                        m = final_inpaint_masks[idx].to(x.dtype).to(x.device)
                         y = m * x.clip(0, 1) + (1 - m) * r
                         y = y.clip(0, 1)
                         return y
@@ -538,7 +590,7 @@ class AnimateDiffControl:
                             h = x.detach().cpu().numpy().transpose((1, 2, 0))
                             h = (h * 255).clip(0, 255).astype(np.uint8)
                             h = cv2.cvtColor(h, cv2.COLOR_RGB2LAB)
-                            h[:, :, 0] = final_feed[i if unit_is_batch else 0]
+                            h[:, :, 0] = final_feeds[i if unit_is_batch else 0]
                             h = cv2.cvtColor(h, cv2.COLOR_LAB2RGB)
                             h = (h.astype(np.float32) / 255.0).transpose((2, 0, 1))
                             y = torch.from_numpy(h).clip(0, 1).to(x)
@@ -556,7 +608,7 @@ class AnimateDiffControl:
                             h = x.detach().cpu().numpy().transpose((1, 2, 0))
                             h = (h * 255).clip(0, 255).astype(np.uint8)
                             h = cv2.cvtColor(h, cv2.COLOR_RGB2HSV)
-                            h[:, :, 2] = final_feed[i if unit_is_batch else 0]
+                            h[:, :, 2] = final_feeds[i if unit_is_batch else 0]
                             h = cv2.cvtColor(h, cv2.COLOR_HSV2RGB)
                             h = (h.astype(np.float32) / 255.0).transpose((2, 0, 1))
                             y = torch.from_numpy(h).clip(0, 1).to(x)
@@ -630,7 +682,7 @@ class AnimateDiffControl:
         if self.cn_script is not None:
             logger.info(f"Hacking ControlNet.")
             self.hack_batchhijack(params)
-            self.hack_cn()
+            self.hack_cn(params)
 
 
     def restore(self):
