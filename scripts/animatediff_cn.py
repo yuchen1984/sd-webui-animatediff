@@ -279,9 +279,9 @@ class AnimateDiffControl:
                         bind_control_lora(unet, control_lora)
                         p.controlnet_control_loras.append(control_lora)
 
-               #if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH:
+                #if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH:
                 using_video_input = False
-                if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH or unit.image is None:
+                if getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH or (unit.image is None  and not issubclass(type(p), StableDiffusionProcessingImg2Img)):
                     input_images = []
                     print("apply hack")
                     unit.batch_images = get_input_frames()
@@ -532,7 +532,12 @@ class AnimateDiffControl:
                 )
                 forward_params.append(forward_param)
                 print('#controls = ' + str(len(controls)))
-
+                if hr_controls is not None:
+                  print('#hr_controls = ' + str(len(hr_controls)))
+                if hr_controls_ipadapter is not None:
+                  print('#hr_controls_ipadapter = ' + str(len(hr_controls_ipadapter['image_embeds'])) + " " + str(len(hr_controls_ipadapter['hidden_states'])))
+                  if hr_controls is not None:
+                    print('#hr_controls = ' + str(hr_controls))                  
                 unit_is_batch = getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH or using_video_input
                 #unit_is_batch = getattr(unit, 'input_mode', InputMode.SIMPLE) == InputMode.BATCH
                 print('unit_is_batch = ' + str(unit_is_batch))
