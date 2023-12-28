@@ -67,7 +67,7 @@ class AnimateDiffMM:
         if self.mm.is_v2:
             logger.info(f"Injecting motion module {model_name} into {sd_ver} UNet middle block.")
             unet.middle_block.insert(-1, self.mm.mid_block.motion_modules[0])
-        elif not self.mm.is_adxl:
+        elif self.mm.enable_gn_hack():
             logger.info(f"Hacking {sd_ver} GroupNorm32 forward function.")
             if self.mm.is_hotshot:
                 from sgm.modules.diffusionmodules.util import GroupNorm32
@@ -137,7 +137,7 @@ class AnimateDiffMM:
         if self.mm.is_v2:
             logger.info(f"Removing motion module from {sd_ver} UNet middle block.")
             unet.middle_block.pop(-2)
-        elif not self.mm.is_adxl:
+        elif self.mm.enable_gn_hack():
             logger.info(f"Restoring {sd_ver} GroupNorm32 forward function.")
             if self.mm.is_hotshot:
                 from sgm.modules.diffusionmodules.util import GroupNorm32

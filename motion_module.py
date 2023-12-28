@@ -15,19 +15,23 @@ import math
 class MotionModuleType(Enum):
     AnimateDiffV1 = "AnimateDiff V1, Yuwei GUo, Shanghai AI Lab"
     AnimateDiffV2 = "AnimateDiff V2, Yuwei Guo, Shanghai AI Lab"
+    AnimateDiffV3 = "AnimateDiff V3, Yuwei Guo, Shanghai AI Lab"
     AnimateDiffXL = "AnimateDiff SDXL, Yuwei Guo, Shanghai AI Lab"
     HotShotXL = "HotShot-XL, John Mullan, Natural Synthetics Inc"
 
 
     @staticmethod
-    def get_mm_type(state_dict: dict):
+    def get_mm_type(state_dict: dict[str, torch.Tensor]):
         keys = list(state_dict.keys())
         if any(["mid_block" in k for k in keys]):
             return MotionModuleType.AnimateDiffV2
         elif any(["temporal_attentions" in k for k in keys]):
             return MotionModuleType.HotShotXL
         elif any(["down_blocks.3" in k for k in keys]):
-            return MotionModuleType.AnimateDiffV1
+            if 32 in next((state_dict[key] for key in state_dict if 'pe' in key), None).shape:
+                return MotionModuleType.AnimateDiffV3
+            else:
+                return MotionModuleType.AnimateDiffV1
         else:
             return MotionModuleType.AnimateDiffXL
 
@@ -43,11 +47,12 @@ class MotionWrapper(nn.Module):
     def __init__(self, mm_name: str, mm_hash: str, mm_type: MotionModuleType):
         super().__init__()
         self.is_v2 = mm_type == MotionModuleType.AnimateDiffV2
+        self.is_v3 = mm_type == MotionModuleType.AnimateDiffV3
         self.is_hotshot = mm_type == MotionModuleType.HotShotXL
         self.is_adxl = mm_type == MotionModuleType.AnimateDiffXL
         self.is_xl = self.is_hotshot or self.is_adxl
-        max_len = 32 if (self.is_v2 or self.is_adxl) else 24
-        in_channels = (320, 640, 1280) if (self.is_hotshot or self.is_adxl) else (320, 640, 1280, 1280)
+        max_len = 32 if (self.is_v2 or self.is_adxl or self.is_v3) else 24
+        in_channels = (320, 640, 1280) if (self.is_xl) else (320, 640, 1280, 1280)
         self.down_blocks = nn.ModuleList([])
         self.up_blocks = nn.ModuleList([])
         for c in in_channels:
@@ -58,6 +63,10 @@ class MotionWrapper(nn.Module):
         self.mm_name = mm_name
         self.mm_type = mm_type
         self.mm_hash = mm_hash
+
+
+    def enable_gn_hack(self):
+        return not (self.is_adxl or self.is_v3)
 
 
 class MotionModule(nn.Module):
